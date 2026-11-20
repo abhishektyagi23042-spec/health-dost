@@ -1,8 +1,12 @@
 import { GoogleGenAI } from '@google/genai'
 import { formatVitalsForPrompt } from './vitals.js'
 
-const PRIMARY_MODEL = 'gemini-2.0-flash'
-const FALLBACK_MODEL = 'gemini-1.5-flash'
+const MODELS_TO_TRY = [
+  'gemini-3.1-flash-lite',
+  'gemini-3.5-flash-lite',
+  'gemini-3.8-flash',
+  'gemini-flash-lite-latest',
+]
 const MAX_LINES = 4
 
 /**
@@ -22,22 +26,25 @@ export async function getDiagnosisFromVitals(vitals) {
     const vitalsSummary = formatVitalsForPrompt(vitals)
     const prompt = `${vitalsSummary}\n\nBased on these vitals only, provide a concise, non-diagnostic summary in at most ${MAX_LINES} lines of plain text. Do not give medical advice or a diagnosis. Do not use bullet points.`
 
-    let response
-    try {
-      response = await ai.models.generateContent({
-        model: PRIMARY_MODEL,
-        contents: prompt,
-      })
-    } catch {
-      response = await ai.models.generateContent({
-        model: FALLBACK_MODEL,
-        contents: prompt,
-      })
+    let text = null
+    for (const model of MODELS_TO_TRY) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+        })
+        let t = response?.text
+        if (typeof t === 'function') t = t()
+        if (t && typeof t === 'string' && t.trim()) {
+          text = t
+          break
+        }
+      } catch (modelErr) {
+        console.warn(`Gemini model ${model} failed, trying next fallback:`, modelErr?.message)
+      }
     }
 
-    let text = response?.text
-    if (typeof text === 'function') text = text()
-    if (text == null || typeof text !== 'string') return null
+    if (!text) return null
 
     const lines = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
     const capped = lines.slice(0, MAX_LINES).join('\n').trim()
