@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
+import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore'
 import { db } from './lib/firebase'
 import { normalizePatientId } from './lib/idUtils'
 import Dashboard from './pages/Dashboard'
@@ -450,7 +450,7 @@ function DoctorLoginScreen({ onBack, onLoginSuccess, onShowMessage }) {
     setLoading(true)
     try {
       const lowerId = cleanId.toLowerCase()
-      // Fallback / Built-in credentials so doctor login works immediately
+      // 1. Fallback / Built-in credentials so doctor login works immediately
       if (
         (lowerId === 'doctor' && cleanPass === 'doctor123') ||
         (lowerId === 'admin' && cleanPass === 'admin123') ||
@@ -464,16 +464,61 @@ function DoctorLoginScreen({ onBack, onLoginSuccess, onShowMessage }) {
         return
       }
 
-      // Check Firestore 'doctors' collection
-      const docRef = doc(db, 'doctors', cleanId)
-      const docSnap = await getDoc(docRef)
-      if (docSnap.exists()) {
+      // 2. Check Firestore 'doctors' or 'doctor' collections
+      let docSnap = null
+
+      // Check 'doctors' collection by doc ID
+      try {
+        const snap = await getDoc(doc(db, 'doctors', cleanId))
+        if (snap.exists()) {
+          docSnap = snap
+        } else if (cleanId.toLowerCase() !== cleanId) {
+          const lowerSnap = await getDoc(doc(db, 'doctors', cleanId.toLowerCase()))
+          if (lowerSnap.exists()) docSnap = lowerSnap
+        }
+      } catch (err) {
+        if (err?.code === 'permission-denied') throw err
+      }
+
+      // Check 'doctor' (singular) collection by doc ID
+      if (!docSnap) {
+        try {
+          const snapSingular = await getDoc(doc(db, 'doctor', cleanId))
+          if (snapSingular.exists()) {
+            docSnap = snapSingular
+          } else if (cleanId.toLowerCase() !== cleanId) {
+            const lowerSnap = await getDoc(doc(db, 'doctor', cleanId.toLowerCase()))
+            if (lowerSnap.exists()) docSnap = lowerSnap
+          }
+        } catch (err) {
+          if (err?.code === 'permission-denied') throw err
+        }
+      }
+
+      // Check by 'id' field in case doc ID differs from doctor ID
+      if (!docSnap) {
+        try {
+          for (const colName of ['doctors', 'doctor']) {
+            const q = query(collection(db, colName), where('id', '==', cleanId))
+            const qSnap = await getDocs(q)
+            if (!qSnap.empty) {
+              docSnap = qSnap.docs[0]
+              break
+            }
+          }
+        } catch (err) {
+          if (err?.code === 'permission-denied') throw err
+        }
+      }
+
+      if (docSnap && docSnap.exists()) {
         const data = docSnap.data()
-        const storedPass = String(data.password || data.pin || '')
+        // Supports field names: 'pass', 'password', or 'pin'
+        const storedPass = String(data.pass ?? data.password ?? data.pin ?? '')
         if (storedPass === cleanPass) {
           onLoginSuccess?.({
-            id: cleanId,
-            name: data.name || `Dr. ${cleanId}`,
+            id: String(data.id || docSnap.id),
+            name: data.name || `Dr. ${data.id || docSnap.id}`,
             role: data.role || 'doctor',
             specialty: data.specialty || '',
           })
@@ -490,6 +535,10 @@ function DoctorLoginScreen({ onBack, onLoginSuccess, onShowMessage }) {
       const lowerId = cleanId.toLowerCase()
       if (lowerId === 'doctor' && cleanPass === 'doctor123') {
         onLoginSuccess?.({ id: cleanId, name: 'Dr. Doctor', role: 'doctor' })
+        return
+      }
+      if (err?.code === 'permission-denied' || msg.includes('permission')) {
+        onShowMessage?.('Firestore permission denied: allow read on doctors collection in Firebase rules.')
         return
       }
       onShowMessage?.(

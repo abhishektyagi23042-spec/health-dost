@@ -1,3 +1,4 @@
+
 import { useState, useRef, useEffect } from 'react'
 // [records] Added collection, getDocs, deleteDoc for medical records
 import { doc, getDoc, collection, getDocs, deleteDoc } from 'firebase/firestore'
