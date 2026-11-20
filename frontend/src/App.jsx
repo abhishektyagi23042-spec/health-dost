@@ -449,22 +449,7 @@ function DoctorLoginScreen({ onBack, onLoginSuccess, onShowMessage }) {
 
     setLoading(true)
     try {
-      const lowerId = cleanId.toLowerCase()
-      // 1. Fallback / Built-in credentials so doctor login works immediately
-      if (
-        (lowerId === 'doctor' && cleanPass === 'doctor123') ||
-        (lowerId === 'admin' && cleanPass === 'admin123') ||
-        (lowerId === 'dr_healthdost' && cleanPass === 'healthdost2026')
-      ) {
-        onLoginSuccess?.({
-          id: cleanId,
-          name: lowerId === 'doctor' ? 'Dr. Doctor' : cleanId,
-          role: 'doctor',
-        })
-        return
-      }
-
-      // 2. Check Firestore 'doctors' or 'doctor' collections
+      // Check Firestore 'doctors' or 'doctor' collections (database-only login)
       let docSnap = null
 
       // Check 'doctors' collection by doc ID
@@ -529,14 +514,9 @@ function DoctorLoginScreen({ onBack, onLoginSuccess, onShowMessage }) {
         }
       }
 
-      onShowMessage?.('Invalid Doctor credentials. (Default: doctor / doctor123)')
+      onShowMessage?.('Doctor not found. Please check your Doctor ID.')
     } catch (err) {
       const msg = err?.message ?? ''
-      const lowerId = cleanId.toLowerCase()
-      if (lowerId === 'doctor' && cleanPass === 'doctor123') {
-        onLoginSuccess?.({ id: cleanId, name: 'Dr. Doctor', role: 'doctor' })
-        return
-      }
       if (err?.code === 'permission-denied' || msg.includes('permission')) {
         onShowMessage?.('Firestore permission denied: allow read on doctors collection in Firebase rules.')
         return
@@ -572,7 +552,7 @@ function DoctorLoginScreen({ onBack, onLoginSuccess, onShowMessage }) {
               type="text"
               value={doctorId}
               onChange={(e) => setDoctorId(e.target.value)}
-              placeholder="e.g. doctor or dr_sharma"
+              placeholder="e.g. dr_sharma"
               autoComplete="username"
               className="flex-1 px-2.5 py-1.5 text-sm bg-white border-2 border-[#7e42ba] rounded-md text-[#2d3035] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#7e42ba]"
             />
@@ -593,10 +573,6 @@ function DoctorLoginScreen({ onBack, onLoginSuccess, onShowMessage }) {
               className="flex-1 px-2.5 py-1.5 text-sm bg-white border-2 border-[#7e42ba] rounded-md text-[#2d3035] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#7e42ba]"
             />
           </div>
-
-          <p className="text-[11px] text-slate-500 pl-1">
-            Default credentials: <span className="font-semibold text-slate-700">doctor</span> / <span className="font-semibold text-slate-700">doctor123</span>
-          </p>
 
           <div className="flex gap-6 pt-3">
             <button
