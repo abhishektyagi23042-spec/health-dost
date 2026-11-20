@@ -346,18 +346,30 @@ export default function Dashboard({
     const doSave = async () => {
       const sessionId = generateSessionId()
       const diagnosis = lastVitals ? diagnosisText : 'Not Generated'
-      if (isOfflineGuest) {
-        let screenshotBase64 = ''
-        const el = dashboardContainerRef?.current
-        if (el) {
+
+      // 1. Generate screenshot from kiosk canvas if available
+      let blob = null
+      let screenshotBase64 = ''
+      const el = dashboardContainerRef?.current
+      if (el) {
+        try {
           const canvas = await html2canvas(el, {
             useCORS: true,
             scale: 1,
             width: el.clientWidth,
             height: el.clientHeight,
           })
-          screenshotBase64 = canvas.toDataURL('image/jpeg', 0.92).split(',')[1] || ''
+          screenshotBase64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1] || ''
+          blob = await new Promise((resolve) => {
+            canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.85)
+          })
+        } catch (canvasErr) {
+          console.warn('Screenshot capture skipped:', canvasErr)
         }
+      }
+
+      // If offline guest mode, save to local offline-saves endpoint
+      if (isOfflineGuest) {
         const localPayload = {
           sessionId,
           sessionDate: new Date().toISOString(),
@@ -390,83 +402,116 @@ export default function Dashboard({
         if (!offlineSaveRes.ok) {
           throw new Error('Failed to save offline session')
         }
-        return
+        return { isOffline: true }
       }
 
+      // 2. Online registered patient mode:
+      // Try uploading screenshot to Firebase Storage (with a fast 3.5s timeout so missing/uninitialized bucket never blocks session save)
+      let screenshotUrl = ''
       const screenshotPath = `screenshots/${patientId}/${sessionId}.jpg`
-      let blob
-      const el = dashboardContainerRef?.current
-      if (el) {
-        const canvas = await html2canvas(el, {
-          useCORS: true,
-          scale: 1,
-          width: el.clientWidth,
-          height: el.clientHeight,
-        })
-        blob = await new Promise((resolve, reject) => {
-          canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob failed'))), 'image/jpeg', 0.92)
-        })
-      } else {
-        const res = await fetch('/session_test.jpg')
-        if (!res.ok) throw new Error('Fixed image not found')
-        blob = await res.blob()
+      if (blob) {
+        try {
+          const uploadPromise = (async () => {
+            const storageRef = ref(storage, screenshotPath)
+            await uploadBytes(storageRef, blob)
+            return await getDownloadURL(storageRef)
+          })()
+          const uploadTimeout = new Promise((_, rej) =>
+            setTimeout(() => rej(new Error('Storage upload timeout')), 3500)
+          )
+          screenshotUrl = await Promise.race([uploadPromise, uploadTimeout])
+        } catch (storageErr) {
+          console.warn('Screenshot storage upload skipped (bucket unavailable or uninitialized):', storageErr?.message)
+        }
       }
-      const storageRef = ref(storage, screenshotPath)
-      await uploadBytes(storageRef, blob)
-      const screenshotUrl = await getDownloadURL(storageRef)
-      const patientDocRef = doc(db, 'patients', patientId)
-      const patientSnap = await getDoc(patientDocRef)
-      const patientData = patientSnap.data() ?? {}
-      const payload = {
-        bloodOxygen: savedVitals.bloodOxygen,
-        bloodPressure: savedVitals.bloodPressure,
-        bmi: savedVitals.bmi,
-        heartRate: savedVitals.heartRate,
-        stressLevel: savedVitals.stressLevel,
-        temperature: savedVitals.temperature,
-        diagnosisText: diagnosis,
-        screenshotPath,
-        screenshotUrl,
-        sessionId,
-        sessionDate: serverTimestamp(),
-        mode: 'online',
-        nurseName: nurseName ?? '',
-        height_cm: patientData.height_cm ?? 0,
-        weight_kg: patientData.weight_kg ?? 0,
-        // [glucose] Include glucose reading and metadata in cloud session
-        glucose: glucoseEntry,
-        glucoseMeta,
+
+      // 3. Save session to Firestore
+      try {
+        const patientDocRef = doc(db, 'patients', patientId)
+        const patientSnap = await getDoc(patientDocRef)
+        const patientData = patientSnap.exists() ? (patientSnap.data() ?? {}) : {}
+        const payload = {
+          bloodOxygen: savedVitals.bloodOxygen,
+          bloodPressure: savedVitals.bloodPressure,
+          bmi: savedVitals.bmi,
+          heartRate: savedVitals.heartRate,
+          stressLevel: savedVitals.stressLevel,
+          temperature: savedVitals.temperature,
+          diagnosisText: diagnosis,
+          screenshotPath,
+          screenshotUrl,
+          sessionId,
+          sessionDate: serverTimestamp(),
+          mode: 'online',
+          nurseName: nurseName ?? '',
+          height_cm: patientData.height_cm ?? (height || 0),
+          weight_kg: patientData.weight_kg ?? (weight || 0),
+          // [glucose] Include glucose reading and metadata in cloud session
+          glucose: glucoseEntry,
+          glucoseMeta,
+        }
+        const sessionDocRef = doc(db, 'patients', patientId, 'sessions', sessionId)
+        const batch = writeBatch(db)
+        batch.set(sessionDocRef, payload)
+        batch.update(patientDocRef, {
+          sessionHistory: arrayUnion(sessionId),
+          updatedAt: serverTimestamp(),
+        })
+        await batch.commit()
+        return { isOffline: false }
+      } catch (firestoreErr) {
+        console.warn('Firestore cloud save failed, falling back to local offline device save:', firestoreErr)
+        // Automatic offline fallback: save to device so patient vitals are NEVER lost!
+        const localPayload = {
+          sessionId,
+          sessionDate: new Date().toISOString(),
+          patientId,
+          patientName,
+          nurseName: nurseName ?? '',
+          gender: patientGender,
+          height_cm: height ?? 0,
+          weight_kg: weight ?? 0,
+          bloodOxygen: savedVitals.bloodOxygen,
+          bloodPressure: savedVitals.bloodPressure,
+          bmi: savedVitals.bmi,
+          heartRate: savedVitals.heartRate,
+          stressLevel: savedVitals.stressLevel,
+          temperature: savedVitals.temperature,
+          diagnosisText: diagnosis,
+          mode: 'offline',
+          glucose: glucoseEntry,
+          glucoseMeta,
+        }
+        await fetch(`${import.meta.env.VITE_SOCKET_URL || 'http://localhost:5175'}/offline-saves`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            payload: localPayload,
+            screenshotBase64,
+          }),
+        })
+        return { isOffline: true, fallback: true }
       }
-      const sessionDocRef = doc(db, 'patients', patientId, 'sessions', sessionId)
-      const batch = writeBatch(db)
-      batch.set(sessionDocRef, payload)
-      batch.update(patientDocRef, {
-        sessionHistory: arrayUnion(sessionId),
-        updatedAt: serverTimestamp(),
-      })
-      await batch.commit()
     }
+
     const savePromise = doSave()
-    savePromise.catch(() => {})
-    savePromise.then(() => {
-      if (saveTimedOutRef.current) onShowMessage?.('Session successfully recorded')
-    })
     const timeoutPromise = new Promise((_, rej) =>
-      setTimeout(() => rej({ isTimeout: true }), 10000)
+      setTimeout(() => rej({ isTimeout: true }), 15000)
     )
+
     try {
-      await Promise.race([savePromise, timeoutPromise])
-      if (!saveTimedOutRef.current) {
-        setSaveLoading(false)
+      const result = await Promise.race([savePromise, timeoutPromise])
+      setSaveLoading(false)
+      if (result?.fallback) {
+        onShowMessage?.('Cloud unavailable – saved locally to device (will sync)')
+      } else {
         onShowMessage?.('Session successfully recorded')
       }
     } catch (err) {
+      setSaveLoading(false)
       if (err?.isTimeout) {
-        saveTimedOutRef.current = true
-        setSaveLoading(false)
-        onShowMessage?.('Session timed out')
+        onShowMessage?.('Session timed out – please check internet connection')
       } else {
-        setSaveLoading(false)
         onShowMessage?.('Failed to record session')
       }
     }
