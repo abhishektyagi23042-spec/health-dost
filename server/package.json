@@ -1,0 +1,14 @@
+{
+  "name": "healthdost-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "serialport": "^12.0.0",
+    "socket.io": "^4.8.1"
+  }
+}

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=HealthDost Kiosk
+Comment=Launch HealthDost server, frontend, and kiosk
+Exec=/bin/bash -lc "\"$HOME/Downloads/final_healthdost-sensors/scripts/pi/launch_kiosk.sh\" >> /tmp/healthdost_launch.log 2>&1"
+Path=$HOME/Downloads/final_healthdost-sensors
+Icon=utilities-terminal
+Terminal=false
+Categories=Utility;
+

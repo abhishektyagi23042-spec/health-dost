@@ -1,0 +1,12 @@
+node_modules
+.env
+.env.local
+*.log
+.DS_Store
+combined_ad8232.ino
+sample_serial_monitor.txt
+ECG_kamal.ino
+offline_saves/
+__pycache__/
+*.pyc
+
